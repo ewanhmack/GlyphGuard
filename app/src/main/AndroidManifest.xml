@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Required permission for Glyph Matrix SDK access -->
+    <uses-permission android:name="com.nothing.ketchum.permission.ENABLE" />
+
+    <!-- Music-reactive AOD visualizer: session-0 (output mix) audio capture -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <!-- Package-visibility declaration (required since API 30) so
+         PackageManager.queryIntentActivities() in the per-app pattern
+         picker (MainViewModel.loadInstalledApps) can actually see other
+         installed apps — without this it would return next to nothing. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.GlyphGuard.Splash">
+
+        <!-- Nothing API Key — "test" works fine for local/sideloaded builds -->
+        <meta-data
+            android:name="NothingKey"
+            android:value="test" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.GlyphGuard.Splash">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- External toggle hook — e.g. for Key Mapper on the Essential Key -->
+        <receiver
+            android:name=".glyph.ToggleReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.ewan.glyphguard.ACTION_TOGGLE_ALWAYS_ON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- The Always-on Glyph Toy itself -->
+        <service
+            android:name=".glyph.GuardToyService"
+            android:exported="true"
+            tools:ignore="ExportedService">
+            <intent-filter>
+                <action android:name="com.nothing.glyph.TOY" />
+            </intent-filter>
+            <meta-data
+                android:name="com.nothing.glyph.toy.name"
+                android:resource="@string/app_name" />
+            <meta-data
+                android:name="com.nothing.glyph.toy.image"
+                android:resource="@drawable/ic_toy_preview" />
+            <meta-data
+                android:name="com.nothing.glyph.toy.summary"
+                android:resource="@string/toy_summary" />
+            <!-- 4a Pro is AOD-only — this is required, not optional, on that device -->
+            <meta-data
+                android:name="com.nothing.glyph.toy.aod_support"
+                android:value="1" />
+        </service>
+
+        <!-- Watches for notifications from apps mapped to a custom pattern
+             (AppPatternPrefs) — requires the user to grant "Notification
+             access" manually in system Settings, no runtime prompt exists
+             for this. See GlyphNotificationListenerService. -->
+        <service
+            android:name=".glyph.GlyphNotificationListenerService"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            tools:ignore="ExportedService">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+    </application>
+
+</manifest>
