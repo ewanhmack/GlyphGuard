@@ -32,6 +32,10 @@ class GlyphController {
         override fun onServiceConnected(componentName: ComponentName?) {
             try {
                 manager?.register(Glyph.DEVICE_25111p)
+                // See GuardToyEngine's identical call for why — untested
+                // whether the unset default applies some system-level
+                // dimming independent of the raw brightness values we send.
+                manager?.setGlyphMatrixTimeout(false)
                 _isConnected.value = true
             } catch (e: Exception) {
                 Log.e(TAG, "register() failed: ${e.message}", e)

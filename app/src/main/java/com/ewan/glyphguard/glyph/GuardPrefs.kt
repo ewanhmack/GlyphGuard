@@ -22,10 +22,6 @@ import com.ewan.glyphguard.engine.FrameCodec
  *                    is just a static display; 2+ frames animate.
  * frameIntervalMs      — how long each frame stays up before advancing to
  *                         the next, when there's more than one.
- * musicReactiveEnabled — if true (and RECORD_AUDIO is granted), an
- *                         audio-reactive visualizer replaces the default
- *                         frames whenever music is playing during AOD. See
- *                         GuardToyEngine.resolveFrameSource().
  */
 object GuardPrefs {
 
@@ -35,14 +31,19 @@ object GuardPrefs {
     private const val KEY_BRIGHTNESS = "brightness"
     private const val KEY_FRAMES = "frames_csv"
     private const val KEY_FRAME_INTERVAL_MS = "frame_interval_ms"
-    private const val KEY_MUSIC_REACTIVE_ENABLED = "music_reactive_enabled"
 
     private const val FRAME_SIZE = 169
 
     const val DEFAULT_TIMEOUT_SECONDS = 5
     const val DEFAULT_BRIGHTNESS = 255
     const val DEFAULT_FRAME_INTERVAL_MS = 200
-    const val MIN_FRAME_INTERVAL_MS = 30
+    // ~15Hz — matches AudioVisualizerEngine's own capture-rate choice ("plenty
+    // for a 13x13 matrix"). A faster requested interval (e.g. from a Glyph
+    // Museum import's own frame timing) gets floored to this instead of
+    // flooding setMatrixFrame() with calls the binder/hardware can't keep up
+    // with — confirmed on-device: a 103-frame animation at 30-40ms/frame
+    // mostly dropped, with only occasional frames actually landing.
+    const val MIN_FRAME_INTERVAL_MS = 66
     const val MAX_FRAME_INTERVAL_MS = 2000
 
     fun isEnabled(context: Context): Boolean =
@@ -84,13 +85,6 @@ object GuardPrefs {
         prefs(context).edit()
             .putInt(KEY_FRAME_INTERVAL_MS, ms.coerceIn(MIN_FRAME_INTERVAL_MS, MAX_FRAME_INTERVAL_MS))
             .apply()
-    }
-
-    fun isMusicReactiveEnabled(context: Context): Boolean =
-        prefs(context).getBoolean(KEY_MUSIC_REACTIVE_ENABLED, false)
-
-    fun setMusicReactiveEnabled(context: Context, enabled: Boolean) {
-        prefs(context).edit().putBoolean(KEY_MUSIC_REACTIVE_ENABLED, enabled).apply()
     }
 
     private fun prefs(context: Context) =

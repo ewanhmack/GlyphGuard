@@ -7,14 +7,21 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.media.AudioManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.media.session.MediaSessionManager
+import android.media.session.PlaybackState
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
 import android.os.Messenger
+import android.os.PowerManager
 import android.util.Log
 import com.ewan.glyphguard.engine.AudioVisualizerEngine
+import com.ewan.glyphguard.engine.FrameScaling
 import com.nothing.ketchum.Glyph
 import com.nothing.ketchum.GlyphMatrixManager
 import com.nothing.ketchum.GlyphToy
@@ -62,16 +69,40 @@ object GuardToyEngine {
 
     private const val TAG = "GuardToyEngine"
     const val ACTION_REFRESH = "com.ewan.glyphguard.REFRESH"
+    private const val SPOTIFY_PACKAGE = "com.spotify.music"
+
+    // Gravity is ~9.81 m/s^2; these leave slack for a phone that isn't lying
+    // perfectly flat rather than requiring an exact +/-9.81 z reading.
+    private const val FACE_DOWN_Z_THRESHOLD = -7f
+    private const val FACE_UP_Z_THRESHOLD = 7f
+
+    // A single instantaneous reading below the threshold also fires for a
+    // hand that's merely tilted downward for a moment (e.g. lowering your
+    // arm right after locking the screen) — require it to hold for this long
+    // before treating it as an actual, deliberate face-down placement.
+    private const val FACE_DOWN_CONFIRM_MS = 600L
 
     private var appContext: Context? = null
     private var manager: GlyphMatrixManager? = null
-    private var audioManager: AudioManager? = null
+    private var mediaSessionManager: MediaSessionManager? = null
+    private var sensorManager: SensorManager? = null
+    private var accelerometer: Sensor? = null
     private val engineScope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var clearJob: Job? = null
     private var animationJob: Job? = null
     private var audioEngine: AudioVisualizerEngine? = null
     private var receiverRegistered = false
+    private var sensorRegistered = false
     private var started = false
+
+    /**
+     * Only true once the accelerometer has actually confirmed the phone is
+     * lying screen-down — this, not merely "screen off", is what gates
+     * [startAnimation] actually rendering anything. Mirrors the system's own
+     * "Flip to Glyph" naming: the display should engage on a real flip, not
+     * on every unrelated screen-off (pocket, timeout while sitting face-up).
+     */
+    private var isFaceDown = false
 
     // ---- Glyph Toy messenger protocol ----
 
@@ -96,6 +127,13 @@ object GuardToyEngine {
         override fun onServiceConnected(componentName: ComponentName?) {
             try {
                 manager?.register(Glyph.DEVICE_25111p)
+                // Experiment: setGlyphMatrixTimeout delegates straight to the
+                // system service with no visible implementation on our side —
+                // untested whether "true" (unset default) applies some kind
+                // of system-level dimming/standby independent of our own
+                // pickup-timeout. Explicitly disabling it to see if raw
+                // brightness values reach the hardware unattenuated.
+                manager?.setGlyphMatrixTimeout(false)
                 startAnimation()
             } catch (e: Exception) {
                 Log.e(TAG, "register() failed: ${e.message}", e)
@@ -107,16 +145,50 @@ object GuardToyEngine {
         }
     }
 
-    // ---- Screen on/off receiver: this is what actually implements the timeout ----
+    // ---- Screen on/off receiver: gates whether we're even listening for a flip ----
 
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
-                Intent.ACTION_SCREEN_ON -> onPickedUp()
-                Intent.ACTION_SCREEN_OFF -> onPutDown()
+                Intent.ACTION_SCREEN_ON -> onScreenOn()
+                Intent.ACTION_SCREEN_OFF -> onScreenOff()
                 ACTION_REFRESH -> startAnimation()
             }
         }
+    }
+
+    // ---- Accelerometer: this is what actually implements "face down only" ----
+
+    private var faceDownConfirmJob: Job? = null
+    private var lastZ = 0f
+
+    private val sensorListener = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent) {
+            val z = event.values[2]
+            lastZ = z
+            when {
+                z < FACE_DOWN_Z_THRESHOLD && !isFaceDown && faceDownConfirmJob == null -> {
+                    faceDownConfirmJob = engineScope.launch {
+                        delay(FACE_DOWN_CONFIRM_MS)
+                        faceDownConfirmJob = null
+                        if (lastZ < FACE_DOWN_Z_THRESHOLD && !isFaceDown) {
+                            isFaceDown = true
+                            onFaceDown()
+                        }
+                    }
+                }
+                z > FACE_UP_Z_THRESHOLD -> {
+                    faceDownConfirmJob?.cancel()
+                    faceDownConfirmJob = null
+                    if (isFaceDown) {
+                        isFaceDown = false
+                        onFaceUp()
+                    }
+                }
+            }
+        }
+
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
     }
 
     /** Idempotent — safe to call from every GuardToyService instance's onCreate(). */
@@ -126,9 +198,26 @@ object GuardToyEngine {
         Log.d(TAG, "ensureStarted")
         val app = context.applicationContext
         appContext = app
-        audioManager = app.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        mediaSessionManager = app.getSystemService(Context.MEDIA_SESSION_SERVICE) as? MediaSessionManager
+        sensorManager = app.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+        accelerometer = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         manager = GlyphMatrixManager.getInstance(app)?.also { it.init(gmmCallback) }
         registerScreenReceiver(app)
+        // Covers the toy service (re)starting while the screen is already off
+        // (e.g. process churn) — otherwise we'd wait forever for a SCREEN_OFF
+        // broadcast that already happened.
+        val powerManager = app.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        if (powerManager?.isInteractive == false) registerSensor()
+    }
+
+    private fun onScreenOn() {
+        unregisterSensor()
+        isFaceDown = false
+        onPickedUp()
+    }
+
+    private fun onScreenOff() {
+        registerSensor()
     }
 
     private fun onPickedUp() {
@@ -149,12 +238,17 @@ object GuardToyEngine {
         }
     }
 
-    private fun onPutDown() {
-        // Back into AOD territory — cancel any pending clear and restart
-        // playback (re-resolving the frame source), ready for the next wake cycle.
-        Log.d(TAG, "onPutDown")
+    /** Confirmed face-down (accelerometer, screen already off) — this is the real "put down". */
+    private fun onFaceDown() {
+        Log.d(TAG, "onFaceDown")
         clearJob?.cancel()
         startAnimation()
+    }
+
+    /** Flipped back face-up without unlocking — treat like a pickup: same timeout, not an instant clear. */
+    private fun onFaceUp() {
+        Log.d(TAG, "onFaceUp")
+        onPickedUp()
     }
 
     // ---- Frame source selection ----
@@ -165,13 +259,13 @@ object GuardToyEngine {
     }
 
     /**
-     * Priority: a pending mapped-app notification beats the music-reactive
-     * visualizer beats the default pattern. A mapped music app's own
+     * Priority: a pending mapped-app notification beats Spotify-linked
+     * behavior beats the default pattern. A mapped music app's own
      * now-playing notification doesn't get to permanently claim the top
      * slot — [GlyphNotificationListenerService] excludes
      * Notification.CATEGORY_TRANSPORT notifications when computing
-     * [NotificationPatternState.pendingPackage], so the visualizer plays
-     * through such notifications instead of being blocked by them; a
+     * [NotificationPatternState.pendingPackage], so Spotify-linked frames
+     * play through such notifications instead of being blocked by them; a
      * different (non-transport) notification from that same app still wins
      * normally.
      */
@@ -181,17 +275,41 @@ object GuardToyEngine {
                 return FrameSource.Static(it.frames, it.intervalMs)
             }
         }
-        if (GuardPrefs.isMusicReactiveEnabled(context) &&
-            hasRecordAudioPermission(context) &&
-            audioManager?.isMusicActive == true
-        ) {
-            return FrameSource.AudioReactive
+        when (MusicPrefs.getMode(context)) {
+            MusicPrefs.Mode.OFF -> {}
+            MusicPrefs.Mode.VISUALIZER ->
+                if (isSpotifyPlaying(context) && hasRecordAudioPermission(context)) {
+                    return FrameSource.AudioReactive
+                }
+            MusicPrefs.Mode.CUSTOM ->
+                if (isSpotifyPlaying(context)) {
+                    return FrameSource.Static(MusicPrefs.getFrames(context), MusicPrefs.getFrameIntervalMs(context))
+                }
         }
         return FrameSource.Static(GuardPrefs.getFrames(context), GuardPrefs.getFrameIntervalMs(context))
     }
 
     private fun hasRecordAudioPermission(context: Context): Boolean =
         context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    /**
+     * Reuses the notification-listener access already granted for per-app
+     * patterns — getActiveSessions() only requires that grant, not a
+     * separate permission. Returns false (not an error) if Spotify isn't
+     * running, isn't the active session, or access hasn't been granted.
+     */
+    private fun isSpotifyPlaying(context: Context): Boolean {
+        val msm = mediaSessionManager ?: return false
+        return try {
+            val listener = ComponentName(context, GlyphNotificationListenerService::class.java)
+            msm.getActiveSessions(listener).any { controller ->
+                controller.packageName == SPOTIFY_PACKAGE &&
+                    controller.playbackState?.state == PlaybackState.STATE_PLAYING
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
 
     // ---- Rendering ----
 
@@ -206,7 +324,7 @@ object GuardToyEngine {
         val context = appContext ?: return
         stopAllRendering()
         try {
-            if (!GuardPrefs.isEnabled(context)) {
+            if (!GuardPrefs.isEnabled(context) || !isFaceDown) {
                 manager?.turnOff()
                 return
             }
@@ -222,7 +340,7 @@ object GuardToyEngine {
     private fun playStatic(frames: List<IntArray>, intervalMs: Int) {
         val context = appContext ?: return
         val brightness = GuardPrefs.getBrightness(context)
-        val scaledFrames = frames.map { base -> IntArray(base.size) { i -> base[i] * brightness / 255 } }
+        val scaledFrames = FrameScaling.scaleFrames(frames, brightness)
 
         if (scaledFrames.size <= 1) {
             manager?.setMatrixFrame(scaledFrames.first())
@@ -285,5 +403,20 @@ object GuardToyEngine {
             context.registerReceiver(screenReceiver, filter)
         }
         receiverRegistered = true
+    }
+
+    private fun registerSensor() {
+        if (sensorRegistered) return
+        val sensor = accelerometer ?: return
+        sensorManager?.registerListener(sensorListener, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+        sensorRegistered = true
+    }
+
+    private fun unregisterSensor() {
+        faceDownConfirmJob?.cancel()
+        faceDownConfirmJob = null
+        if (!sensorRegistered) return
+        sensorManager?.unregisterListener(sensorListener)
+        sensorRegistered = false
     }
 }

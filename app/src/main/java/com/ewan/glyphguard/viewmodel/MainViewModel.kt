@@ -1,17 +1,21 @@
 package com.ewan.glyphguard.viewmodel
 
 import android.app.Application
+import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ewan.glyphguard.engine.DefaultFrames
+import com.ewan.glyphguard.engine.FrameScaling
 import com.ewan.glyphguard.engine.GlyphMuseumFormat
 import com.ewan.glyphguard.engine.ImageToFrame
 import com.ewan.glyphguard.glyph.AppPatternPrefs
+import com.ewan.glyphguard.glyph.GalleryPrefs
 import com.ewan.glyphguard.glyph.GlyphController
 import com.ewan.glyphguard.glyph.GuardPrefs
+import com.ewan.glyphguard.glyph.MusicPrefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,30 +42,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _frameIntervalMs = MutableStateFlow(GuardPrefs.getFrameIntervalMs(application))
     val frameIntervalMs: StateFlow<Int> = _frameIntervalMs.asStateFlow()
 
-    private val _musicReactiveEnabled = MutableStateFlow(GuardPrefs.isMusicReactiveEnabled(application))
-    val musicReactiveEnabled: StateFlow<Boolean> = _musicReactiveEnabled.asStateFlow()
+    private val _musicMode = MutableStateFlow(MusicPrefs.getMode(application))
+    val musicMode: StateFlow<MusicPrefs.Mode> = _musicMode.asStateFlow()
 
     /**
-     * null = the global default pattern (GuardPrefs) is being edited/shown —
-     * i.e. everything on MainScreen behaves exactly as before this feature.
-     * Non-null = [frames]/[frameIntervalMs] and every pattern-editing method
-     * below (useBuiltIn/importImages/importGlyphMuseumFile/setFrameIntervalMs)
-     * read/write this specific app's mapping (AppPatternPrefs) instead. Set
-     * via [startEditingApp], cleared via [stopEditingApp].
+     * What [frames]/[frameIntervalMs] and every pattern-editing method below
+     * (useBuiltIn/importImages/importGlyphMuseumFile/setFrameIntervalMs/
+     * applyGalleryEntry) currently read/write. Default = the global default
+     * pattern (GuardPrefs) — i.e. everything behaves exactly as before this
+     * concept existed. Set via [startEditingApp]/[startEditingMusic],
+     * cleared via [stopEditingTarget].
      */
-    private val _editingPackage = MutableStateFlow<String?>(null)
-    val editingPackage: StateFlow<String?> = _editingPackage.asStateFlow()
+    sealed class EditTarget {
+        object Default : EditTarget()
+        data class App(val packageName: String) : EditTarget()
+        object Music : EditTarget()
+    }
+
+    private val _editTarget = MutableStateFlow<EditTarget>(EditTarget.Default)
+    val editTarget: StateFlow<EditTarget> = _editTarget.asStateFlow()
 
     data class AppInfo(
         val packageName: String,
         val label: String,
         val icon: Drawable,
         val hasCustomPattern: Boolean,
+        val frames: List<IntArray>,
+        val intervalMs: Int,
     )
 
     private val _installedApps = MutableStateFlow<List<AppInfo>>(emptyList())
     val installedApps: StateFlow<List<AppInfo>> = _installedApps.asStateFlow()
     private var installedAppsLoaded = false
+
+    private val _galleryEntries = MutableStateFlow<List<GalleryPrefs.Entry>>(emptyList())
+    val galleryEntries: StateFlow<List<GalleryPrefs.Entry>> = _galleryEntries.asStateFlow()
 
     /**
      * What the simulator/preview should actually show right now. Cycles
@@ -85,34 +100,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         glyph.init(application)
     }
 
-    fun setEnabled(context: android.content.Context, value: Boolean) {
+    fun setEnabled(context: Context, value: Boolean) {
         _enabled.value = value
         GuardPrefs.setEnabled(context, value)
         if (!value) glyph.clear() else pushPreview()
     }
 
-    fun setTimeoutSeconds(context: android.content.Context, seconds: Int) {
+    fun setTimeoutSeconds(context: Context, seconds: Int) {
         _timeoutSeconds.value = seconds
         GuardPrefs.setTimeoutSeconds(context, seconds)
     }
 
-    fun setBrightness(context: android.content.Context, value: Int) {
+    fun setBrightness(context: Context, value: Int) {
         _brightness.value = value
         GuardPrefs.setBrightness(context, value)
         pushPreview()
     }
 
-    fun setMusicReactiveEnabled(context: android.content.Context, enabled: Boolean) {
-        _musicReactiveEnabled.value = enabled
-        GuardPrefs.setMusicReactiveEnabled(context, enabled)
+    fun setMusicMode(context: Context, mode: MusicPrefs.Mode) {
+        _musicMode.value = mode
+        MusicPrefs.setMode(context, mode)
     }
 
-    fun setFrameIntervalMs(context: android.content.Context, ms: Int) {
+    fun setFrameIntervalMs(context: Context, ms: Int) {
         _frameIntervalMs.value = ms
         persistFrameIntervalMs(context, ms)
     }
 
-    fun useBuiltIn(context: android.content.Context, pattern: BuiltInPattern) {
+    fun useBuiltIn(context: Context, pattern: BuiltInPattern) {
         val f = when (pattern) {
             BuiltInPattern.DOT -> DefaultFrames.dot()
             BuiltInPattern.RING -> DefaultFrames.ring()
@@ -124,7 +139,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Import one or more frames, in the order picked, as an animation sequence. */
-    fun importImages(context: android.content.Context, uris: List<Uri>) {
+    fun importImages(context: Context, uris: List<Uri>) {
         if (uris.isEmpty()) return
         val imported = uris.mapNotNull { ImageToFrame.fromUri(context.contentResolver, it) }
         if (imported.isEmpty()) return
@@ -139,7 +154,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * supports a different duration per frame, but GlyphGuard only has one shared speed
      * today, so per-frame timing beyond that isn't preserved.
      */
-    fun importGlyphMuseumFile(context: android.content.Context, uri: Uri): Result<Unit> {
+    fun importGlyphMuseumFile(context: Context, uri: Uri): Result<Unit> {
         return try {
             val json = context.contentResolver.openInputStream(uri)
                 ?.use { it.bufferedReader().readText() }
@@ -155,28 +170,72 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Saves the pattern currently shown (whatever [frames]/[frameIntervalMs] hold right now) under [name]. */
+    fun saveCurrentToGallery(context: Context, name: String) {
+        if (name.isBlank()) return
+        GalleryPrefs.save(context, name.trim(), _frames.value, _frameIntervalMs.value)
+        loadGallery(context)
+    }
+
+    /** Re-reads the gallery — cheap (one SharedPreferences blob), safe to call every time the screen opens. */
+    fun loadGallery(context: Context) {
+        _galleryEntries.value = GalleryPrefs.getAll(context)
+    }
+
+    /** Loads a saved design into whatever [editTarget] currently is (default, an app, or music). */
+    fun applyGalleryEntry(context: Context, entry: GalleryPrefs.Entry) {
+        _frames.value = entry.frames
+        _frameIntervalMs.value = entry.intervalMs
+        persistFrames(context, entry.frames)
+        persistFrameIntervalMs(context, entry.intervalMs)
+        pushPreview()
+    }
+
+    /** Gallery is a standalone tab with no "current editing session" — always targets Default. */
+    fun applyGalleryEntryToDefault(context: Context, entry: GalleryPrefs.Entry) {
+        _editTarget.value = EditTarget.Default
+        _frames.value = entry.frames
+        _frameIntervalMs.value = entry.intervalMs
+        GuardPrefs.setFrames(context, entry.frames)
+        GuardPrefs.setFrameIntervalMs(context, entry.intervalMs)
+        pushPreview()
+    }
+
+    fun deleteGalleryEntry(context: Context, id: String) {
+        GalleryPrefs.remove(context, id)
+        loadGallery(context)
+    }
+
     /** Switches [frames]/[frameIntervalMs] and every editing method to this app's mapping. */
-    fun startEditingApp(context: android.content.Context, packageName: String) {
-        _editingPackage.value = packageName
+    fun startEditingApp(context: Context, packageName: String) {
+        _editTarget.value = EditTarget.App(packageName)
         val existing = AppPatternPrefs.getPattern(context, packageName)
         _frames.value = existing?.frames ?: listOf(DefaultFrames.dot())
         _frameIntervalMs.value = existing?.intervalMs ?: GuardPrefs.DEFAULT_FRAME_INTERVAL_MS
         pushPreview()
     }
 
+    /** Switches [frames]/[frameIntervalMs] and every editing method to the Spotify-linked custom design. */
+    fun startEditingMusic(context: Context) {
+        _editTarget.value = EditTarget.Music
+        _frames.value = MusicPrefs.getFrames(context)
+        _frameIntervalMs.value = MusicPrefs.getFrameIntervalMs(context)
+        pushPreview()
+    }
+
     /** Un-maps an app back to the default pattern. If it's the one currently being edited, resets the editor too. */
-    fun removeAppPattern(context: android.content.Context, packageName: String) {
+    fun removeAppPattern(context: Context, packageName: String) {
         AppPatternPrefs.removePattern(context, packageName)
-        if (_editingPackage.value == packageName) {
+        if (_editTarget.value == EditTarget.App(packageName)) {
             _frames.value = listOf(DefaultFrames.dot())
             _frameIntervalMs.value = GuardPrefs.DEFAULT_FRAME_INTERVAL_MS
             pushPreview()
         }
     }
 
-    /** Reverts [frames]/[frameIntervalMs] to the global default. Must be called when leaving the per-app editor. */
-    fun stopEditingApp(context: android.content.Context) {
-        _editingPackage.value = null
+    /** Reverts [frames]/[frameIntervalMs] to the global default. Must be called when leaving the app/music editor. */
+    fun stopEditingTarget(context: Context) {
+        _editTarget.value = EditTarget.Default
         _frames.value = GuardPrefs.getFrames(context)
         _frameIntervalMs.value = GuardPrefs.getFrameIntervalMs(context)
         installedAppsLoaded = false // a mapping may have just changed — refresh "Custom"/"Default" labels
@@ -184,23 +243,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Loads once per app-list visit (cheap enough to re-run, but no need to repeat while unchanged). */
-    fun loadInstalledApps(context: android.content.Context) {
+    fun loadInstalledApps(context: Context) {
         if (installedAppsLoaded) return
         installedAppsLoaded = true
         viewModelScope.launch(Dispatchers.IO) {
             val pm = context.packageManager
             val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
             val mapped = AppPatternPrefs.getMappedPackages(context)
+            val defaultFrames = GuardPrefs.getFrames(context)
+            val defaultIntervalMs = GuardPrefs.getFrameIntervalMs(context)
             val apps = pm.queryIntentActivities(launcherIntent, 0)
                 .distinctBy { it.activityInfo.packageName }
                 .mapNotNull { resolveInfo ->
                     try {
                         val pkg = resolveInfo.activityInfo.packageName
+                        val custom = AppPatternPrefs.getPattern(context, pkg)
                         AppInfo(
                             packageName = pkg,
                             label = resolveInfo.loadLabel(pm).toString(),
                             icon = resolveInfo.loadIcon(pm),
                             hasCustomPattern = mapped.contains(pkg),
+                            frames = custom?.frames ?: defaultFrames,
+                            intervalMs = custom?.intervalMs ?: defaultIntervalMs,
                         )
                     } catch (e: Exception) {
                         null
@@ -211,41 +275,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Push whatever the preview is currently showing to the matrix for a quick live check (app-mode). */
+    /** Push the current pattern's first frame to the matrix for a quick live check (app-mode). */
     fun pushPreview() {
         if (!_enabled.value) return
-        glyph.displayFrame(previewFrame.value)
+        glyph.displayFrame(scaledPreviewFrame(0))
     }
 
     fun stopPreview() {
         glyph.clear()
     }
 
-    private fun persistFrames(context: android.content.Context, frames: List<IntArray>) {
-        val pkg = _editingPackage.value
-        if (pkg != null) {
-            AppPatternPrefs.setPattern(context, pkg, frames, _frameIntervalMs.value)
-        } else {
-            GuardPrefs.setFrames(context, frames)
+    private fun persistFrames(context: Context, frames: List<IntArray>) {
+        when (val target = _editTarget.value) {
+            is EditTarget.App -> AppPatternPrefs.setPattern(context, target.packageName, frames, _frameIntervalMs.value)
+            EditTarget.Music -> MusicPrefs.setFrames(context, frames)
+            EditTarget.Default -> GuardPrefs.setFrames(context, frames)
         }
     }
 
-    private fun persistFrameIntervalMs(context: android.content.Context, ms: Int) {
-        val pkg = _editingPackage.value
-        if (pkg != null) {
-            AppPatternPrefs.setPattern(context, pkg, _frames.value, ms)
-        } else {
-            GuardPrefs.setFrameIntervalMs(context, ms)
+    private fun persistFrameIntervalMs(context: Context, ms: Int) {
+        when (val target = _editTarget.value) {
+            is EditTarget.App -> AppPatternPrefs.setPattern(context, target.packageName, _frames.value, ms)
+            EditTarget.Music -> MusicPrefs.setFrameIntervalMs(context, ms)
+            EditTarget.Default -> GuardPrefs.setFrameIntervalMs(context, ms)
         }
     }
 
     private fun scaledPreviewFrame(index: Int): IntArray {
         val list = _frames.value
-        return scale(list[index % list.size], _brightness.value)
+        val peak = FrameScaling.peakOf(list)
+        return FrameScaling.scaleFrame(list[index % list.size], _brightness.value, peak)
     }
-
-    private fun scale(f: IntArray, brightness: Int): IntArray =
-        IntArray(f.size) { i -> f[i] * brightness / 255 }
 
     override fun onCleared() {
         glyph.close()

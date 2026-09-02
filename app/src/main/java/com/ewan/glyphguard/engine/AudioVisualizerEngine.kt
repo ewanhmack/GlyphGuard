@@ -38,14 +38,17 @@ class AudioVisualizerEngine {
         private const val START_TIMEOUT_SECONDS = 2L
 
         /**
-         * Magnitude-to-brightness scale factor — a starting point, not a
-         * calibrated value. Android's FFT bytes are signed 8-bit components
-         * (roughly -128..127 per Re/Im part), so a per-bin magnitude tops
-         * out around 180; real music rarely drives every band that hard.
-         * Expect to tune this once it's running against real audio on the
-         * actual matrix — can't calibrate this blind.
+         * Magnitude-to-brightness scale factor, applied to sqrt(peak) rather
+         * than peak directly (see fftToFrame) — raw FFT magnitude is heavily
+         * skewed toward bass, so a linear scale left every other band too
+         * dim to clear paintColumn's rounding and show more than its single
+         * bottom-edge LED, which looked like only one row was ever lit.
+         * sqrt-compression brings quieter bands up into a visible range
+         * without letting loud ones dominate. Bumped up again after
+         * on-device feedback that 20.0 still wasn't sensitive enough to
+         * quieter passages — was 2.2, linear, before the sqrt-compression fix.
          */
-        private const val MAGNITUDE_SCALE = 2.2
+        private const val MAGNITUDE_SCALE = 36.0
     }
 
     private var handlerThread: HandlerThread? = null
@@ -169,7 +172,7 @@ class AudioVisualizerEngine {
             var peak = 0.0
             for (k in startBin..endBin) peak = max(peak, magnitudes[k])
 
-            val brightness = (peak * MAGNITUDE_SCALE).roundToInt().coerceIn(0, 255)
+            val brightness = (sqrt(peak) * MAGNITUDE_SCALE).roundToInt().coerceIn(0, 255)
             paintColumn(frame, band, brightness)
         }
         return frame
@@ -185,9 +188,10 @@ class AudioVisualizerEngine {
         val count = MatrixSize.ROW_LED_COUNTS[column]
         if (count == 0) return
         val rowStart = (size - count) / 2
-        val rowEnd = rowStart + count // exclusive
         val lit = (count * brightness / 255).coerceIn(0, count)
-        for (r in (rowEnd - lit) until rowEnd) {
+        // Bars grow from rowStart, the physical bottom of this column's span
+        // (confirmed on-device — row index increases toward the top here).
+        for (r in rowStart until (rowStart + lit)) {
             frame[r * size + column] = brightness
         }
     }
