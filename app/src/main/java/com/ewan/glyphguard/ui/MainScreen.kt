@@ -1,13 +1,8 @@
 package com.ewan.glyphguard.ui
 
-import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.provider.Settings
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -22,61 +17,24 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
-import androidx.core.app.NotificationManagerCompat
-import androidx.core.content.ContextCompat
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import com.ewan.glyphguard.viewmodel.MainViewModel
 
 @Composable
 fun MainScreen(
     viewModel: MainViewModel,
-    onOpenAppPatterns: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val enabled by viewModel.enabled.collectAsState()
     val timeoutSeconds by viewModel.timeoutSeconds.collectAsState()
     val brightness by viewModel.brightness.collectAsState()
-    val musicReactiveEnabled by viewModel.musicReactiveEnabled.collectAsState()
     val previewFrame by viewModel.previewFrame.collectAsState()
     val isConnected by viewModel.isConnected.collectAsState()
-
-    val recordAudioPermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            viewModel.setMusicReactiveEnabled(context, true)
-        } else {
-            android.widget.Toast.makeText(
-                context,
-                "Microphone permission denied — music-reactive AOD needs it to read current audio output, not to record anything.",
-                android.widget.Toast.LENGTH_LONG
-            ).show()
-        }
-    }
-
-    var notificationAccessGranted by remember { mutableStateOf(isNotificationAccessGranted(context)) }
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                notificationAccessGranted = isNotificationAccessGranted(context)
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
 
     Column(
         modifier = modifier
@@ -143,63 +101,6 @@ fun MainScreen(
         // ---- 4) Default pattern ----
         PatternPickerSection(viewModel = viewModel)
 
-        // ---- 5) Per-app patterns ----
-        Text("Per-app patterns", style = MaterialTheme.typography.titleMedium)
-        Text(
-            "Give specific apps their own pattern, shown during AOD whenever they have " +
-                "a pending notification — highest priority, above both the visualizer and " +
-                "the default pattern above (except a mapped music app's own now-playing " +
-                "notification, which doesn't block the visualizer below).",
-            style = MaterialTheme.typography.bodySmall
-        )
-        Button(onClick = onOpenAppPatterns) {
-            Text("Assign patterns per app…")
-        }
-        Text(
-            if (notificationAccessGranted) {
-                "Notification access granted."
-            } else {
-                "Needs \"Notification access\" to detect pending notifications — reads only " +
-                    "which app and when, never message content."
-            },
-            style = MaterialTheme.typography.bodySmall
-        )
-        OutlinedButton(onClick = { openNotificationAccessSettings(context) }) {
-            Text("Open notification access settings")
-        }
-
-        // ---- 6) Music-reactive visualizer ----
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column {
-                Text("Music-reactive AOD", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Live EQ-style animation while music plays, instead of the default " +
-                        "pattern (unless a pending app notification is showing). Uses the " +
-                        "microphone permission as the technical mechanism for reading " +
-                        "current audio output — Glyph Guard never records or accesses " +
-                        "microphone input.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-            Switch(
-                checked = musicReactiveEnabled,
-                onCheckedChange = { turnOn ->
-                    if (!turnOn) {
-                        viewModel.setMusicReactiveEnabled(context, false)
-                    } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
-                        PackageManager.PERMISSION_GRANTED
-                    ) {
-                        viewModel.setMusicReactiveEnabled(context, true)
-                    } else {
-                        recordAudioPermission.launch(Manifest.permission.RECORD_AUDIO)
-                    }
-                }
-            )
-        }
-
         // ---- System toy manager shortcut ----
         Button(onClick = { openGlyphToyManager(context) }) {
             Text("Open system Glyph Toy manager")
@@ -248,17 +149,5 @@ private fun openGlyphToyManager(context: android.content.Context) {
         context.startActivity(intent)
     } catch (e: Exception) {
         // Older system version — ask the user to navigate manually.
-    }
-}
-
-private fun isNotificationAccessGranted(context: android.content.Context): Boolean =
-    NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName)
-
-/** No runtime-permission-style prompt exists for notification access — only this Settings deep link. */
-private fun openNotificationAccessSettings(context: android.content.Context) {
-    try {
-        context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-    } catch (e: Exception) {
-        // No-op — extremely unlikely to be missing on any real device.
     }
 }

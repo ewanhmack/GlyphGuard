@@ -38,8 +38,6 @@ fun GlyphSimulatorView(
     frame: IntArray,
     modifier: Modifier = Modifier
 ) {
-    val matrixSize = MatrixSize.SIZE
-
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -57,34 +55,46 @@ fun GlyphSimulatorView(
             .padding(12.dp),
         contentAlignment = Alignment.Center
     ) {
-        Canvas(
+        GlyphGrid(
+            frame = frame,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
-        ) {
-            val gridSize = size.width
-            val cellSize = gridSize / matrixSize
-            val dotRadius = cellSize * 0.35f
+        )
+    }
+}
 
-            for (y in 0 until matrixSize) {
-                for (x in 0 until matrixSize) {
-                    val index = y * matrixSize + x
-                    val brightness = if (index < frame.size) {
-                        frame[index].coerceIn(0, 255)
-                    } else {
-                        0
-                    }
+/**
+ * Just the LED grid drawing, no border/background chrome — shared by
+ * [GlyphSimulatorView] (the big settings-screen preview) and
+ * [GlyphPreviewThumbnail] (small list-row previews).
+ */
+@Composable
+fun GlyphGrid(frame: IntArray, modifier: Modifier = Modifier) {
+    val matrixSize = MatrixSize.SIZE
+    Canvas(modifier = modifier) {
+        val gridSize = size.width
+        val cellSize = gridSize / matrixSize
+        val dotRadius = cellSize * 0.35f
 
-                    val centerX = x * cellSize + cellSize / 2f
-                    val centerY = y * cellSize + cellSize / 2f
-
-                    drawLedDot(
-                        centerX = centerX,
-                        centerY = centerY,
-                        radius = dotRadius,
-                        brightness = brightness
-                    )
+        for (y in 0 until matrixSize) {
+            for (x in 0 until matrixSize) {
+                val index = y * matrixSize + x
+                val brightness = if (index < frame.size) {
+                    frame[index].coerceIn(0, 255)
+                } else {
+                    0
                 }
+
+                val centerX = x * cellSize + cellSize / 2f
+                val centerY = y * cellSize + cellSize / 2f
+
+                drawLedDot(
+                    centerX = centerX,
+                    centerY = centerY,
+                    radius = dotRadius,
+                    brightness = brightness
+                )
             }
         }
     }

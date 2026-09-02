@@ -28,7 +28,7 @@ import com.ewan.glyphguard.viewmodel.MainViewModel
 /**
  * Editor for one app's pattern — GlyphSimulatorView preview + the same
  * PatternPickerSection used for the global default, bound to this app via
- * MainViewModel.editingPackage. MainViewModel.stopEditingApp() runs
+ * MainViewModel.editTarget. MainViewModel.stopEditingTarget() runs
  * automatically whenever this composable leaves composition (see the
  * DisposableEffect below), regardless of which exit path was used.
  */
@@ -45,11 +45,11 @@ fun AppPatternEditorScreen(
 
     LaunchedEffect(packageName) { viewModel.startEditingApp(context, packageName) }
     // Runs on any exit path -- the back button below, the system back
-    // gesture (once MainActivity's BackHandler pops the screen stack), or
+    // gesture (once MainActivity's BackHandler clears the drill-in), or
     // this composable simply leaving composition for any other reason --
-    // so MainScreen's simulator/labels never keep showing this app's
-    // pattern after leaving.
-    DisposableEffect(Unit) { onDispose { viewModel.stopEditingApp(context) } }
+    // so the default pattern's simulator/labels never keep showing this
+    // app's pattern after leaving.
+    DisposableEffect(Unit) { onDispose { viewModel.stopEditingTarget(context) } }
 
     Column(
         modifier = modifier
