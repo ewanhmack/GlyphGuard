@@ -22,6 +22,7 @@ import android.os.PowerManager
 import android.util.Log
 import com.ewan.glyphguard.engine.AudioVisualizerEngine
 import com.ewan.glyphguard.engine.FrameScaling
+import com.ewan.glyphguard.engine.ImageToFrame
 import com.nothing.ketchum.Glyph
 import com.nothing.ketchum.GlyphMatrixManager
 import com.nothing.ketchum.GlyphToy
@@ -260,17 +261,21 @@ object GuardToyEngine {
 
     /**
      * Priority: a pending mapped-app notification beats Spotify-linked
-     * behavior beats the default pattern. A mapped music app's own
-     * now-playing notification doesn't get to permanently claim the top
-     * slot — [GlyphNotificationListenerService] excludes
-     * Notification.CATEGORY_TRANSPORT notifications when computing
+     * behavior beats an unmapped pending app's own icon beats the default
+     * pattern. A mapped music app's own now-playing notification doesn't
+     * get to permanently claim the top slot — [GlyphNotificationListenerService]
+     * excludes Notification.CATEGORY_TRANSPORT notifications when computing
      * [NotificationPatternState.pendingPackage], so Spotify-linked frames
      * play through such notifications instead of being blocked by them; a
      * different (non-transport) notification from that same app still wins
-     * normally.
+     * normally. The icon fallback sits below Spotify-linked behavior
+     * specifically so a stray non-transport Spotify notification can't
+     * knock the live visualizer/custom pattern out for its icon while
+     * music's actually playing.
      */
     private fun resolveFrameSource(context: Context): FrameSource {
-        NotificationPatternState.pendingPackage?.let { pkg ->
+        val pendingPackage = NotificationPatternState.pendingPackage
+        pendingPackage?.let { pkg ->
             AppPatternPrefs.getPattern(context, pkg)?.let {
                 return FrameSource.Static(it.frames, it.intervalMs)
             }
@@ -285,6 +290,11 @@ object GuardToyEngine {
                 if (isSpotifyPlaying(context)) {
                     return FrameSource.Static(MusicPrefs.getFrames(context), MusicPrefs.getFrameIntervalMs(context))
                 }
+        }
+        pendingPackage?.let { pkg ->
+            ImageToFrame.fromInstalledApp(context, pkg)?.let {
+                return FrameSource.Static(listOf(it), GuardPrefs.DEFAULT_FRAME_INTERVAL_MS)
+            }
         }
         return FrameSource.Static(GuardPrefs.getFrames(context), GuardPrefs.getFrameIntervalMs(context))
     }

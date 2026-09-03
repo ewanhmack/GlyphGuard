@@ -68,12 +68,14 @@ build).
    toggling "Always-on enabled" off, for instance, blanks the matrix
    immediately without needing to re-select anything in system settings
 
-## Wiring up the Essential Key (long-press to toggle Always-on)
+## Wiring up the Essential Key
 
 Nothing doesn't expose the Essential Key to third-party apps — there's no
 SDK hook for it, confirmed by their own community threads. Every working
 remap goes through the same community workaround, and that's what this
-needs too:
+needs too. There's no granular "disable just the AI part" system toggle
+either — freeing the key at all means freeing all of it, native AI/Notes
+behavior included, which is exactly what step 1 does.
 
 1. **Free the key from Essential Space** (one-time, from a PC with ADB):
 
@@ -87,30 +89,43 @@ needs too:
    — it needs an Accessibility Service to read raw hardware key events, so
    grant that plus unrestricted battery).
 
-3. Create a new key map in Key Mapper:
-   - Trigger: **Essential Key**, mode = **Long press**
-   - Action: **Intent** → select **"Broadcast receiver"**, then fill in:
-     - Action: `com.ewan.glyphguard.ACTION_TOGGLE_ALWAYS_ON`
+3. In the app's **Key** tab, set what each press type should do (toggle
+   Always-on, toggle flashlight, media play/pause/next/previous, or open a
+   specific app) — this only configures what happens when a trigger fires,
+   not the trigger itself.
+
+4. Create **one Key Mapper rule per press type you configured**:
+   - Trigger: **Essential Key**, mode = **Single press** / **Double press** /
+     **Long press** (matching what you set in the app)
+   - Action: **Intent** → select **"Broadcast receiver"**, then fill in the
+     matching Action string:
+     - Single press: `com.ewan.glyphguard.ACTION_KEY_SINGLE`
+     - Double press: `com.ewan.glyphguard.ACTION_KEY_DOUBLE`
+     - Long press: `com.ewan.glyphguard.ACTION_KEY_LONG`
      - (Key Mapper's own docs describe this exact "select Broadcast
        receiver, fill in Action" flow for triggering other apps —
        it's a first-class action type, not a workaround.)
 
-4. Test the receiver on its own first — before touching Key Mapper — with
-   the **"Copy ADB test command"** button in the app, which copies:
+5. Test each receiver on its own first — before touching Key Mapper — from
+   a PC with ADB:
 
    ```
-   adb shell am broadcast -a com.ewan.glyphguard.ACTION_TOGGLE_ALWAYS_ON -p com.ewan.glyphguard
+   adb shell am broadcast -a com.ewan.glyphguard.ACTION_KEY_SINGLE -p com.ewan.glyphguard
+   adb shell am broadcast -a com.ewan.glyphguard.ACTION_KEY_DOUBLE -p com.ewan.glyphguard
+   adb shell am broadcast -a com.ewan.glyphguard.ACTION_KEY_LONG -p com.ewan.glyphguard
    ```
 
-   Run that from your PC while the app's showing something on the matrix —
-   if it clears (and clears again back on with a second run), the receiver
+   Run whichever one matches what you configured in the Key tab — if the
+   action happens (flashlight toggles, music pauses, etc.), the receiver
    side is confirmed working and any remaining issue is in the Key Mapper
-   configuration, not the app.
+   configuration, not the app. The original `ACTION_TOGGLE_ALWAYS_ON`
+   broadcast (a single, fixed toggle) still works too, unchanged, if that's
+   all you need.
 
 This wasn't build-tested against a physical Essential Key press in this
 environment for the same reason as everything else here — but the
-broadcast receiver itself is plain Android and the ADB command is a
-direct, deterministic way to test it independent of Key Mapper.
+broadcast receivers themselves are plain Android and the ADB commands are
+a direct, deterministic way to test them independent of Key Mapper.
 
 ## Known limitations
 

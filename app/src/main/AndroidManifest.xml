@@ -54,6 +54,18 @@
             </intent-filter>
         </receiver>
 
+        <!-- Per-press-type Essential Key actions (see KeyActionPrefs) — one
+             Key Mapper rule per trigger, each pointed at its own action here. -->
+        <receiver
+            android:name=".glyph.KeyActionReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.ewan.glyphguard.ACTION_KEY_SINGLE" />
+                <action android:name="com.ewan.glyphguard.ACTION_KEY_DOUBLE" />
+                <action android:name="com.ewan.glyphguard.ACTION_KEY_LONG" />
+            </intent-filter>
+        </receiver>
+
         <!-- The Always-on Glyph Toy itself -->
         <service
             android:name=".glyph.GuardToyService"
