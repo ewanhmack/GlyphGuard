@@ -343,14 +343,14 @@ object GuardToyEngine {
         val scaledFrames = FrameScaling.scaleFrames(frames, brightness)
 
         if (scaledFrames.size <= 1) {
-            manager?.setMatrixFrame(scaledFrames.first())
+            manager?.setMatrixFrame(FrameScaling.toHardwareRange(scaledFrames.first()))
             return
         }
 
         animationJob = engineScope.launch {
             var index = 0
             while (isActive) {
-                manager?.setMatrixFrame(scaledFrames[index])
+                manager?.setMatrixFrame(FrameScaling.toHardwareRange(scaledFrames[index]))
                 index = (index + 1) % scaledFrames.size
                 delay(intervalMs.toLong())
             }
@@ -362,7 +362,7 @@ object GuardToyEngine {
         val started = engine.start { rawFrame ->
             val brightness = GuardPrefs.getBrightness(context)
             val scaled = IntArray(rawFrame.size) { i -> rawFrame[i] * brightness / 255 }
-            manager?.setMatrixFrame(scaled)
+            manager?.setMatrixFrame(FrameScaling.toHardwareRange(scaled))
         }
         if (started) {
             audioEngine = engine

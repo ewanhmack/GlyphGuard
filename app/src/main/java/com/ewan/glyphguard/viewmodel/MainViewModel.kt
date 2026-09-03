@@ -278,7 +278,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Push the current pattern's first frame to the matrix for a quick live check (app-mode). */
     fun pushPreview() {
         if (!_enabled.value) return
-        glyph.displayFrame(scaledPreviewFrame(0))
+        // scaledPreviewFrame() is 0-255 -- shared with the on-screen simulator, which needs
+        // that range. The real matrix wants ~0-4095 (see FrameScaling.toHardwareRange), so
+        // that conversion happens here, right at the hardware boundary, not upstream.
+        glyph.displayFrame(FrameScaling.toHardwareRange(scaledPreviewFrame(0)))
     }
 
     fun stopPreview() {

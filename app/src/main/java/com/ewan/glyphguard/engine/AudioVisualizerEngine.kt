@@ -148,9 +148,10 @@ class AudioVisualizerEngine {
      * Groups FFT magnitude bins into BANDS bands, weighted toward finer
      * resolution at low frequencies and coarser at high (matches how pitch
      * is perceived, and keeps bass transients visually distinct), then maps
-     * each band's magnitude to a bar rising from the bottom of that
-     * column's real LED span (MatrixSize.ROW_LED_COUNTS, reused here by
-     * row/column symmetry).
+     * each band's magnitude to a bar mirrored outward from the center row of
+     * that column's real LED span (MatrixSize.ROW_LED_COUNTS, reused here by
+     * row/column symmetry) — a soundwave/spectrum look, quiet audio reading
+     * as a thin center line rather than a bar hugging one edge.
      */
     private fun fftToFrame(fft: ByteArray): IntArray {
         val frame = IntArray(MatrixSize.FRAME_LENGTH)
@@ -187,12 +188,17 @@ class AudioVisualizerEngine {
         val size = MatrixSize.SIZE
         val count = MatrixSize.ROW_LED_COUNTS[column]
         if (count == 0) return
-        val rowStart = (size - count) / 2
-        val lit = (count * brightness / 255).coerceIn(0, count)
-        // Bars grow from rowStart, the physical bottom of this column's span
-        // (confirmed on-device — row index increases toward the top here).
-        for (r in rowStart until (rowStart + lit)) {
-            frame[r * size + column] = brightness
+        // Every column's real LED span is centered on the grid's middle row
+        // (ROW_LED_COUNTS is symmetric, and every entry is odd), so growing
+        // the bar outward from there in both directions at once needs no
+        // assumption about which physical direction is "up" — unlike the
+        // single-edge version this replaced, which had that backwards.
+        val center = size / 2
+        val halfSpan = count / 2
+        val lit = halfSpan * brightness / 255
+        for (offset in 0..lit) {
+            frame[(center - offset) * size + column] = brightness
+            frame[(center + offset) * size + column] = brightness
         }
     }
 }
