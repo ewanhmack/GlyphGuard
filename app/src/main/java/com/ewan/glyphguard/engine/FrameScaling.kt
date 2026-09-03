@@ -18,6 +18,22 @@ package com.ewan.glyphguard.engine
  */
 object FrameScaling {
 
+    /**
+     * Nothing's Glyph Matrix HAL takes each pixel on a ~12-bit (0-4095) scale, not
+     * 0-255 — confirmed by decompiling glyph-matrix-sdk-2.0.aar: its own
+     * GlyphMatrixUtils.rgbaToGrayscale() (the reference bitmap-to-frame conversion)
+     * computes an 8-bit luma value and multiplies by its private BRIGHTNESS_MULTIPLIER
+     * (16) before returning, capped at its MAX_BRIGHTNESS (4095). GlyphMatrixManager
+     * .setMatrixFrame(int[]) forwards whatever array it's given straight to the AIDL
+     * service (IGlyphService.setMatrixColors) with no rescaling of its own — so a frame
+     * that peaks at 255 only reaches ~6% of the hardware's true maximum. Everywhere else
+     * in this codebase (GuardPrefs, DefaultFrames, ImageToFrame, GlyphMuseumFormat,
+     * FrameCodec) works in the more portable 0-255 range, so this is the one place that
+     * adapts to the hardware's real range, right before a frame leaves the app.
+     */
+    private const val HARDWARE_SCALE = 16
+    private const val HARDWARE_MAX = 255 * HARDWARE_SCALE
+
     fun peakOf(frames: List<IntArray>): Int =
         frames.maxOfOrNull { frame -> frame.maxOrNull() ?: 0 } ?: 0
 
@@ -30,4 +46,8 @@ object FrameScaling {
         val peak = peakOf(frames)
         return frames.map { scaleFrame(it, brightness, peak) }
     }
+
+    /** Last step before any frame reaches [com.nothing.ketchum.GlyphMatrixManager] — see class doc. */
+    fun toHardwareRange(frame: IntArray): IntArray =
+        IntArray(frame.size) { i -> (frame[i] * HARDWARE_SCALE).coerceIn(0, HARDWARE_MAX) }
 }
