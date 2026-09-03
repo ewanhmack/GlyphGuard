@@ -47,6 +47,8 @@ fun PatternPickerSection(
     val context = LocalContext.current
     val frames by viewModel.frames.collectAsState()
     val frameIntervalMs by viewModel.frameIntervalMs.collectAsState()
+    val editTarget by viewModel.editTarget.collectAsState()
+    val appTarget = editTarget as? MainViewModel.EditTarget.App
     var showSaveDialog by remember { mutableStateOf(false) }
     var showGalleryPicker by remember { mutableStateOf(false) }
 
@@ -78,6 +80,11 @@ fun PatternPickerSection(
             OutlinedButton(onClick = {
                 viewModel.useBuiltIn(context, MainViewModel.BuiltInPattern.NONE)
             }) { Text("None") }
+            if (appTarget != null) {
+                OutlinedButton(onClick = { viewModel.useAppIcon(context, appTarget.packageName) }) {
+                    Text("Use app icon")
+                }
+            }
             OutlinedButton(onClick = { imagePicker.launch("image/*") }) {
                 Text("Import frames…")
             }

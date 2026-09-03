@@ -130,7 +130,7 @@ fun AppPatternListScreen(
                     Column {
                         Text(app.label, style = MaterialTheme.typography.bodyLarge)
                         Text(
-                            if (app.hasCustomPattern) "Custom pattern" else "Default",
+                            if (app.hasCustomPattern) "Custom pattern" else "App icon",
                             style = MaterialTheme.typography.bodySmall
                         )
                     }

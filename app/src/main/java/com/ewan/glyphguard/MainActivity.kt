@@ -11,6 +11,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -27,13 +28,14 @@ import androidx.lifecycle.ViewModelProvider
 import com.ewan.glyphguard.ui.AppPatternEditorScreen
 import com.ewan.glyphguard.ui.AppPatternListScreen
 import com.ewan.glyphguard.ui.GalleryScreen
+import com.ewan.glyphguard.ui.KeyActionsScreen
 import com.ewan.glyphguard.ui.MainScreen
 import com.ewan.glyphguard.ui.MusicScreen
 import com.ewan.glyphguard.ui.theme.GlyphGuardTheme
 import com.ewan.glyphguard.viewmodel.MainViewModel
 
 private enum class Tab(val label: String) {
-    MAIN("Main"), GALLERY("Gallery"), MUSIC("Music"), APPS("Apps")
+    MAIN("Main"), GALLERY("Gallery"), MUSIC("Music"), APPS("Apps"), KEY("Key")
 }
 
 class MainActivity : ComponentActivity() {
@@ -84,6 +86,12 @@ class MainActivity : ComponentActivity() {
                                     icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
                                     label = { Text(Tab.APPS.label) }
                                 )
+                                NavigationBarItem(
+                                    selected = selectedTab == Tab.KEY,
+                                    onClick = { selectedTab = Tab.KEY },
+                                    icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                                    label = { Text(Tab.KEY.label) }
+                                )
                             }
                         }
                     }
@@ -114,6 +122,10 @@ class MainActivity : ComponentActivity() {
                             Tab.APPS -> AppPatternListScreen(
                                 viewModel = viewModel,
                                 onAppSelected = { pkg, label -> appEditorTarget = pkg to label },
+                                modifier = Modifier.padding(innerPadding)
+                            )
+                            Tab.KEY -> KeyActionsScreen(
+                                viewModel = viewModel,
                                 modifier = Modifier.padding(innerPadding)
                             )
                         }

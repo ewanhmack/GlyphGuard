@@ -15,6 +15,7 @@ import com.ewan.glyphguard.glyph.AppPatternPrefs
 import com.ewan.glyphguard.glyph.GalleryPrefs
 import com.ewan.glyphguard.glyph.GlyphController
 import com.ewan.glyphguard.glyph.GuardPrefs
+import com.ewan.glyphguard.glyph.KeyActionPrefs
 import com.ewan.glyphguard.glyph.MusicPrefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -78,6 +79,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _galleryEntries = MutableStateFlow<List<GalleryPrefs.Entry>>(emptyList())
     val galleryEntries: StateFlow<List<GalleryPrefs.Entry>> = _galleryEntries.asStateFlow()
 
+    /** What one Essential Key trigger is currently mapped to — see KeyActionReceiver. */
+    data class KeyMapping(
+        val action: KeyActionPrefs.KeyAction,
+        val targetPackage: String?,
+        val targetLabel: String?,
+    )
+
+    private val _keyMappings = MutableStateFlow(loadKeyMappings(application))
+    val keyMappings: StateFlow<Map<KeyActionPrefs.KeyTrigger, KeyMapping>> = _keyMappings.asStateFlow()
+
     /**
      * What the simulator/preview should actually show right now. Cycles
      * through [frames] at [frameIntervalMs] so an imported sequence previews
@@ -135,6 +146,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         _frames.value = listOf(f)
         persistFrames(context, listOf(f))
+        pushPreview()
+    }
+
+    /** Downsamples an installed app's own launcher icon into a single static frame. */
+    fun useAppIcon(context: Context, packageName: String) {
+        val frame = ImageToFrame.fromInstalledApp(context, packageName) ?: return
+        _frames.value = listOf(frame)
+        persistFrames(context, listOf(frame))
         pushPreview()
     }
 
@@ -206,11 +225,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         loadGallery(context)
     }
 
-    /** Switches [frames]/[frameIntervalMs] and every editing method to this app's mapping. */
+    /**
+     * Switches [frames]/[frameIntervalMs] and every editing method to this app's mapping.
+     * An app with no custom pattern yet starts from its own icon rather than a plain dot —
+     * still nothing but a live preview until something's actually changed/saved.
+     */
     fun startEditingApp(context: Context, packageName: String) {
         _editTarget.value = EditTarget.App(packageName)
         val existing = AppPatternPrefs.getPattern(context, packageName)
-        _frames.value = existing?.frames ?: listOf(DefaultFrames.dot())
+        _frames.value = existing?.frames
+            ?: listOf(ImageToFrame.fromInstalledApp(context, packageName) ?: DefaultFrames.dot())
         _frameIntervalMs.value = existing?.intervalMs ?: GuardPrefs.DEFAULT_FRAME_INTERVAL_MS
         pushPreview()
     }
@@ -227,7 +251,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun removeAppPattern(context: Context, packageName: String) {
         AppPatternPrefs.removePattern(context, packageName)
         if (_editTarget.value == EditTarget.App(packageName)) {
-            _frames.value = listOf(DefaultFrames.dot())
+            _frames.value = listOf(ImageToFrame.fromInstalledApp(context, packageName) ?: DefaultFrames.dot())
             _frameIntervalMs.value = GuardPrefs.DEFAULT_FRAME_INTERVAL_MS
             pushPreview()
         }
@@ -258,12 +282,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     try {
                         val pkg = resolveInfo.activityInfo.packageName
                         val custom = AppPatternPrefs.getPattern(context, pkg)
+                        // Same fallback GuardToyEngine uses at runtime for a pending
+                        // notification with no saved mapping -- the app's own icon,
+                        // not the shared default -- so this preview matches what a
+                        // real notification from it would actually show.
+                        val fallbackFrames = ImageToFrame.fromInstalledApp(context, pkg)
+                            ?.let { listOf(it) } ?: defaultFrames
                         AppInfo(
                             packageName = pkg,
                             label = resolveInfo.loadLabel(pm).toString(),
                             icon = resolveInfo.loadIcon(pm),
                             hasCustomPattern = mapped.contains(pkg),
-                            frames = custom?.frames ?: defaultFrames,
+                            frames = custom?.frames ?: fallbackFrames,
                             intervalMs = custom?.intervalMs ?: defaultIntervalMs,
                         )
                     } catch (e: Exception) {
@@ -272,6 +302,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 .sortedBy { it.label.lowercase() }
             _installedApps.value = apps
+        }
+    }
+
+    fun setKeyAction(context: Context, trigger: KeyActionPrefs.KeyTrigger, action: KeyActionPrefs.KeyAction) {
+        KeyActionPrefs.setAction(context, trigger, action)
+        if (action != KeyActionPrefs.KeyAction.OPEN_APP) KeyActionPrefs.setTargetPackage(context, trigger, null)
+        _keyMappings.value = loadKeyMappings(context)
+    }
+
+    fun setKeyActionApp(context: Context, trigger: KeyActionPrefs.KeyTrigger, packageName: String) {
+        KeyActionPrefs.setTargetPackage(context, trigger, packageName)
+        _keyMappings.value = loadKeyMappings(context)
+    }
+
+    private fun loadKeyMappings(context: Context): Map<KeyActionPrefs.KeyTrigger, KeyMapping> {
+        val pm = context.packageManager
+        return KeyActionPrefs.KeyTrigger.entries.associateWith { trigger ->
+            val pkg = KeyActionPrefs.getTargetPackage(context, trigger)
+            val label = pkg?.let {
+                runCatching { pm.getApplicationLabel(pm.getApplicationInfo(it, 0)).toString() }.getOrNull()
+            }
+            KeyMapping(KeyActionPrefs.getAction(context, trigger), pkg, label)
         }
     }
 
