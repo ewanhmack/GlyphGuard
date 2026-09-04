@@ -101,13 +101,27 @@ fun MusicScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
 
         when (mode) {
             MusicPrefs.Mode.OFF -> {}
-            MusicPrefs.Mode.VISUALIZER -> Text(
-                "Live EQ-style animation while Spotify plays, instead of the default " +
-                    "pattern (unless a mapped app has a pending notification). Glyph " +
-                    "Guard never records or accesses microphone input beyond reading " +
-                    "current audio output for the visualizer.",
-                style = MaterialTheme.typography.bodySmall
-            )
+            MusicPrefs.Mode.VISUALIZER -> {
+                val visualizerFrame by viewModel.visualizerPreviewFrame.collectAsState()
+                DisposableEffect(Unit) {
+                    viewModel.startVisualizerPreview(context)
+                    onDispose { viewModel.stopVisualizerPreview() }
+                }
+                Text(
+                    "Live EQ-style animation while Spotify plays, instead of the default " +
+                        "pattern (unless an added app has a pending notification). Glyph " +
+                        "Guard never records or accesses microphone input beyond reading " +
+                        "current audio output for the visualizer.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    "This preview runs live off whatever's currently playing on the phone " +
+                        "(not just Spotify) so you can see it react right now — on the " +
+                        "matrix itself it only engages while Spotify is actively playing.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                GlyphSimulatorView(frame = visualizerFrame)
+            }
             MusicPrefs.Mode.CUSTOM -> {
                 LaunchedEffect(Unit) { viewModel.startEditingMusic(context) }
                 DisposableEffect(Unit) { onDispose { viewModel.stopEditingTarget(context) } }

@@ -7,14 +7,17 @@ import android.graphics.drawable.Drawable
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.ewan.glyphguard.engine.AudioVisualizerEngine
 import com.ewan.glyphguard.engine.DefaultFrames
 import com.ewan.glyphguard.engine.FrameScaling
 import com.ewan.glyphguard.engine.GlyphMuseumFormat
 import com.ewan.glyphguard.engine.ImageToFrame
+import com.ewan.glyphguard.engine.MatrixSize
 import com.ewan.glyphguard.glyph.AppPatternPrefs
 import com.ewan.glyphguard.glyph.GalleryPrefs
 import com.ewan.glyphguard.glyph.GlyphController
 import com.ewan.glyphguard.glyph.GuardPrefs
+import com.ewan.glyphguard.glyph.IconNotifyPrefs
 import com.ewan.glyphguard.glyph.KeyActionPrefs
 import com.ewan.glyphguard.glyph.MusicPrefs
 import kotlinx.coroutines.Dispatchers
@@ -68,9 +71,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val label: String,
         val icon: Drawable,
         val hasCustomPattern: Boolean,
+        val iconNotifyEnabled: Boolean,
         val frames: List<IntArray>,
         val intervalMs: Int,
-    )
+    ) {
+        /** In the per-app list at all — either a full custom pattern or just the simple icon-flash opt-in. */
+        val isAdded: Boolean get() = hasCustomPattern || iconNotifyEnabled
+    }
 
     private val _installedApps = MutableStateFlow<List<AppInfo>>(emptyList())
     val installedApps: StateFlow<List<AppInfo>> = _installedApps.asStateFlow()
@@ -106,6 +113,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     val isConnected: StateFlow<Boolean> get() = glyph.isConnected
+
+    /**
+     * Live preview of the music visualizer for the Music tab — a separate
+     * AudioVisualizerEngine instance from GuardToyEngine's own AOD one, since
+     * this runs foreground/screen-on and that one only runs face-down/AOD;
+     * the two states are mutually exclusive in practice, so there's no real
+     * contention, just no reason to couple this screen to the AOD engine.
+     */
+    private var previewAudioEngine: AudioVisualizerEngine? = null
+    private val _visualizerPreviewFrame = MutableStateFlow(IntArray(MatrixSize.FRAME_LENGTH))
+    val visualizerPreviewFrame: StateFlow<IntArray> = _visualizerPreviewFrame.asStateFlow()
+
+    fun startVisualizerPreview(context: Context) {
+        if (previewAudioEngine != null) return
+        val engine = AudioVisualizerEngine()
+        val started = engine.start { rawFrame ->
+            val brightness = GuardPrefs.getBrightness(context)
+            _visualizerPreviewFrame.value = IntArray(rawFrame.size) { i -> rawFrame[i] * brightness / 255 }
+        }
+        if (started) previewAudioEngine = engine
+    }
+
+    fun stopVisualizerPreview() {
+        previewAudioEngine?.stop()
+        previewAudioEngine = null
+        _visualizerPreviewFrame.value = IntArray(MatrixSize.FRAME_LENGTH)
+    }
 
     init {
         glyph.init(application)
@@ -247,14 +281,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         pushPreview()
     }
 
-    /** Un-maps an app back to the default pattern. If it's the one currently being edited, resets the editor too. */
-    fun removeAppPattern(context: Context, packageName: String) {
+    /** Lightweight opt-in — no editor, just "flash this app's own icon on its notifications" (IconNotifyPrefs). */
+    fun addAppToNotifyList(context: Context, packageName: String) {
+        IconNotifyPrefs.add(context, packageName)
+        installedAppsLoaded = false
+        loadInstalledApps(context)
+    }
+
+    /** Removes an app from the per-app list entirely -- both the simple icon opt-in and any full custom pattern. */
+    fun removeAppFromNotifyList(context: Context, packageName: String) {
+        IconNotifyPrefs.remove(context, packageName)
         AppPatternPrefs.removePattern(context, packageName)
-        if (_editTarget.value == EditTarget.App(packageName)) {
-            _frames.value = listOf(ImageToFrame.fromInstalledApp(context, packageName) ?: DefaultFrames.dot())
-            _frameIntervalMs.value = GuardPrefs.DEFAULT_FRAME_INTERVAL_MS
-            pushPreview()
-        }
+        installedAppsLoaded = false
+        loadInstalledApps(context)
     }
 
     /** Reverts [frames]/[frameIntervalMs] to the global default. Must be called when leaving the app/music editor. */
@@ -274,6 +313,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val pm = context.packageManager
             val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
             val mapped = AppPatternPrefs.getMappedPackages(context)
+            val iconEnabled = IconNotifyPrefs.getEnabledPackages(context)
             val defaultFrames = GuardPrefs.getFrames(context)
             val defaultIntervalMs = GuardPrefs.getFrameIntervalMs(context)
             val apps = pm.queryIntentActivities(launcherIntent, 0)
@@ -283,9 +323,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val pkg = resolveInfo.activityInfo.packageName
                         val custom = AppPatternPrefs.getPattern(context, pkg)
                         // Same fallback GuardToyEngine uses at runtime for a pending
-                        // notification with no saved mapping -- the app's own icon,
-                        // not the shared default -- so this preview matches what a
-                        // real notification from it would actually show.
+                        // notification with no custom pattern -- the app's own icon,
+                        // not the shared default -- so this preview matches what
+                        // adding it (or a real notification once added) would show.
                         val fallbackFrames = ImageToFrame.fromInstalledApp(context, pkg)
                             ?.let { listOf(it) } ?: defaultFrames
                         AppInfo(
@@ -293,6 +333,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             label = resolveInfo.loadLabel(pm).toString(),
                             icon = resolveInfo.loadIcon(pm),
                             hasCustomPattern = mapped.contains(pkg),
+                            iconNotifyEnabled = iconEnabled.contains(pkg),
                             frames = custom?.frames ?: fallbackFrames,
                             intervalMs = custom?.intervalMs ?: defaultIntervalMs,
                         )
@@ -340,6 +381,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         glyph.clear()
     }
 
+    /** Pushes an arbitrary live-drawn frame straight to the matrix (app-mode) -- doesn't touch [frames]/persisted state. */
+    fun pushLiveFrame(frame: IntArray) {
+        val peak = FrameScaling.peakOf(listOf(frame)).coerceAtLeast(1)
+        val scaled = FrameScaling.scaleFrame(frame, _brightness.value, peak)
+        glyph.displayFrame(FrameScaling.toHardwareRange(scaled))
+    }
+
+    fun clearLiveDraw() {
+        glyph.clear()
+    }
+
+    fun saveLiveFrameToGallery(context: Context, name: String, frame: IntArray) {
+        if (name.isBlank()) return
+        GalleryPrefs.save(context, name.trim(), listOf(frame), GuardPrefs.DEFAULT_FRAME_INTERVAL_MS)
+        loadGallery(context)
+    }
+
     private fun persistFrames(context: Context, frames: List<IntArray>) {
         when (val target = _editTarget.value) {
             is EditTarget.App -> AppPatternPrefs.setPattern(context, target.packageName, frames, _frameIntervalMs.value)
@@ -364,6 +422,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         glyph.close()
+        previewAudioEngine?.stop()
         super.onCleared()
     }
 
