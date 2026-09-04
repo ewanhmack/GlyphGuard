@@ -83,10 +83,10 @@ fun AppPatternEditorScreen(
         PatternPickerSection(viewModel = viewModel)
 
         OutlinedButton(onClick = {
-            viewModel.removeAppPattern(context, packageName)
+            viewModel.removeAppFromNotifyList(context, packageName)
             onDone()
         }) {
-            Text("Remove custom pattern")
+            Text("Remove from list")
         }
     }
 }

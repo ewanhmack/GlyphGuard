@@ -9,14 +9,20 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -31,6 +37,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.Lifecycle
@@ -38,9 +45,12 @@ import androidx.lifecycle.LifecycleEventObserver
 import com.ewan.glyphguard.viewmodel.MainViewModel
 
 /**
- * Per-app pattern list (Apps tab) — pick an app to give it its own pattern,
- * shown during AOD whenever it has a pending notification. Selecting one
- * opens AppPatternEditorScreen. See MainViewModel.installedApps/loadInstalledApps.
+ * Per-app pattern list (Apps tab) — starts empty; add an app to give it a
+ * pattern shown during AOD whenever it has a pending notification (briefly —
+ * see GuardToyEngine's NOTIFICATION_FLASH_MS), highest priority above both
+ * Spotify-linked behavior and the default pattern. Adding an app is
+ * lightweight (just its own icon, IconNotifyPrefs, no drawing required) —
+ * tap into it afterward for a fully custom pattern (AppPatternPrefs) instead.
  */
 @Composable
 fun AppPatternListScreen(
@@ -50,7 +60,7 @@ fun AppPatternListScreen(
 ) {
     val context = LocalContext.current
     val apps by viewModel.installedApps.collectAsState()
-    var query by remember { mutableStateOf("") }
+    var showAddPicker by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { viewModel.loadInstalledApps(context) }
 
@@ -66,18 +76,14 @@ fun AppPatternListScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    val filtered = if (query.isBlank()) {
-        apps
-    } else {
-        apps.filter { it.label.contains(query, ignoreCase = true) }
-    }
+    val added = apps.filter { it.isAdded }
 
     Column(modifier = modifier.fillMaxSize().padding(20.dp)) {
         Text("Per-app patterns", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Give specific apps their own pattern, shown during AOD whenever they have " +
-                "a pending notification — highest priority, above both Spotify-linked " +
-                "behavior and the default pattern.",
+            "Add specific apps to give them their own pattern, shown briefly during AOD " +
+                "whenever they post a notification — highest priority, above both " +
+                "Spotify-linked behavior and the default pattern.",
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
         )
@@ -97,23 +103,20 @@ fun AppPatternListScreen(
             Text("Open notification access settings")
         }
 
-        OutlinedTextField(
-            value = query,
-            onValueChange = { query = it },
-            label = { Text("Search apps") },
-            modifier = Modifier.fillMaxWidth()
-        )
+        OutlinedButton(onClick = { showAddPicker = true }) {
+            Text("Add app…")
+        }
 
-        if (apps.isEmpty()) {
+        if (added.isEmpty()) {
             Text(
-                "Loading installed apps…",
+                "No apps added yet.",
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(top = 16.dp)
             )
         }
 
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
-            items(filtered, key = { it.packageName }) { app ->
+        LazyColumn(modifier = Modifier.fillMaxSize().padding(top = 8.dp)) {
+            items(added, key = { it.packageName }) { app ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -127,15 +130,77 @@ fun AppPatternListScreen(
                         modifier = Modifier.size(40.dp)
                     )
                     GlyphPreviewThumbnail(app.frames, app.intervalMs)
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(app.label, style = MaterialTheme.typography.bodyLarge)
                         Text(
                             if (app.hasCustomPattern) "Custom pattern" else "App icon",
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
+                    IconButton(onClick = { viewModel.removeAppFromNotifyList(context, app.packageName) }) {
+                        Icon(Icons.Filled.Close, contentDescription = "Remove ${app.label}")
+                    }
                 }
                 HorizontalDivider()
+            }
+        }
+    }
+
+    if (showAddPicker) {
+        AddAppDialog(
+            apps = apps.filterNot { it.isAdded },
+            onDismiss = { showAddPicker = false },
+            onPicked = { pkg ->
+                viewModel.addAppToNotifyList(context, pkg)
+                showAddPicker = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun AddAppDialog(
+    apps: List<MainViewModel.AppInfo>,
+    onDismiss: () -> Unit,
+    onPicked: (packageName: String) -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    val filtered = if (query.isBlank()) apps else apps.filter { it.label.contains(query, ignoreCase = true) }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = MaterialTheme.shapes.medium) {
+            Column(modifier = Modifier.heightIn(max = 500.dp).padding(16.dp)) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    label = { Text("Search apps") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (apps.isEmpty()) {
+                    Text(
+                        "Loading installed apps…",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 16.dp)
+                    )
+                }
+                LazyColumn(modifier = Modifier.padding(top = 8.dp)) {
+                    items(filtered, key = { it.packageName }) { app ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onPicked(app.packageName) }
+                                .padding(vertical = 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Image(
+                                bitmap = app.icon.toBitmap().asImageBitmap(),
+                                contentDescription = null,
+                                modifier = Modifier.size(32.dp)
+                            )
+                            Text(app.label, style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+                }
             }
         }
     }

@@ -7,10 +7,11 @@ import android.service.notification.StatusBarNotification
 import android.util.Log
 
 /**
- * Watches for notifications from apps the user has mapped to a custom glyph
- * pattern (AppPatternPrefs) and tracks which one, if any, should currently
- * be shown. Consumed only by GuardToyService during AOD rendering — this
- * service has no visible effect while the screen is on.
+ * Watches for notifications from apps the user has opted into a per-app
+ * display — either a fully custom pattern (AppPatternPrefs) or the simpler
+ * icon-flash list (IconNotifyPrefs) — and tracks which one, if any, should
+ * currently be shown. Consumed only by GuardToyService during AOD
+ * rendering — this service has no visible effect while the screen is on.
  *
  * Requires the user to grant "Notification access" manually in system
  * Settings (Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS) — there's no
@@ -38,16 +39,16 @@ class GlyphNotificationListenerService : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        if (AppPatternPrefs.getMappedPackages(applicationContext).contains(sbn.packageName)) {
-            recompute()
-        }
+        if (isOptedIn(sbn.packageName)) recompute()
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
-        if (AppPatternPrefs.getMappedPackages(applicationContext).contains(sbn.packageName)) {
-            recompute()
-        }
+        if (isOptedIn(sbn.packageName)) recompute()
     }
+
+    private fun isOptedIn(packageName: String): Boolean =
+        AppPatternPrefs.getMappedPackages(applicationContext).contains(packageName) ||
+            IconNotifyPrefs.isEnabled(applicationContext, packageName)
 
     /**
      * Recomputes from getActiveNotifications() (the source of truth) rather
@@ -58,10 +59,11 @@ class GlyphNotificationListenerService : NotificationListenerService() {
      */
     private fun recompute() {
         val mapped = AppPatternPrefs.getMappedPackages(applicationContext)
+        val iconEnabled = IconNotifyPrefs.getEnabledPackages(applicationContext)
         val candidate = try {
             activeNotifications
                 ?.filter { sbn ->
-                    mapped.contains(sbn.packageName) &&
+                    (mapped.contains(sbn.packageName) || iconEnabled.contains(sbn.packageName)) &&
                         sbn.notification.category != Notification.CATEGORY_TRANSPORT
                 }
                 ?.maxByOrNull { it.postTime }
@@ -71,8 +73,12 @@ class GlyphNotificationListenerService : NotificationListenerService() {
         }
 
         val newPending = candidate?.packageName
-        if (NotificationPatternState.pendingPackage != newPending) {
+        val newPostTime = candidate?.postTime ?: 0L
+        if (NotificationPatternState.pendingPackage != newPending ||
+            NotificationPatternState.pendingPostTimeMs != newPostTime
+        ) {
             NotificationPatternState.pendingPackage = newPending
+            NotificationPatternState.pendingPostTimeMs = newPostTime
             Log.d(TAG, "pendingPackage -> $newPending")
             sendBroadcast(Intent(GuardToyEngine.ACTION_REFRESH).setPackage(packageName))
         }

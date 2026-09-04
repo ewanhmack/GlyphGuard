@@ -11,6 +11,7 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.os.Build
@@ -83,6 +84,12 @@ object GuardToyEngine {
     // before treating it as an actual, deliberate face-down placement.
     private const val FACE_DOWN_CONFIRM_MS = 600L
 
+    // How long a pending notification's pattern (custom or icon) stays on
+    // screen after it posts, regardless of whether the notification itself
+    // is still sitting in the tray — a brief "you got a notification" flash
+    // rather than camping the display until manually swiped away.
+    private const val NOTIFICATION_FLASH_MS = 5000L
+
     private var appContext: Context? = null
     private var manager: GlyphMatrixManager? = null
     private var mediaSessionManager: MediaSessionManager? = null
@@ -90,6 +97,7 @@ object GuardToyEngine {
     private var accelerometer: Sensor? = null
     private val engineScope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var clearJob: Job? = null
+    private var notificationFlashJob: Job? = null
     private var animationJob: Job? = null
     private var audioEngine: AudioVisualizerEngine? = null
     private var receiverRegistered = false
@@ -260,9 +268,12 @@ object GuardToyEngine {
     }
 
     /**
-     * Priority: a pending mapped-app notification beats Spotify-linked
-     * behavior beats an unmapped pending app's own icon beats the default
-     * pattern. A mapped music app's own now-playing notification doesn't
+     * Priority: a pending notification's custom pattern (AppPatternPrefs)
+     * beats Spotify-linked behavior beats that same pending app's own icon
+     * (IconNotifyPrefs) beats the default pattern. [freshPendingPackage] is
+     * already gated to the last [NOTIFICATION_FLASH_MS] by [startAnimation]
+     * — by the time it's stale this just behaves as if nothing were
+     * pending. A mapped music app's own now-playing notification doesn't
      * get to permanently claim the top slot — [GlyphNotificationListenerService]
      * excludes Notification.CATEGORY_TRANSPORT notifications when computing
      * [NotificationPatternState.pendingPackage], so Spotify-linked frames
@@ -273,9 +284,8 @@ object GuardToyEngine {
      * knock the live visualizer/custom pattern out for its icon while
      * music's actually playing.
      */
-    private fun resolveFrameSource(context: Context): FrameSource {
-        val pendingPackage = NotificationPatternState.pendingPackage
-        pendingPackage?.let { pkg ->
+    private fun resolveFrameSource(context: Context, freshPendingPackage: String?): FrameSource {
+        freshPendingPackage?.let { pkg ->
             AppPatternPrefs.getPattern(context, pkg)?.let {
                 return FrameSource.Static(it.frames, it.intervalMs)
             }
@@ -283,7 +293,7 @@ object GuardToyEngine {
         when (MusicPrefs.getMode(context)) {
             MusicPrefs.Mode.OFF -> {}
             MusicPrefs.Mode.VISUALIZER ->
-                if (isSpotifyPlaying(context) && hasRecordAudioPermission(context)) {
+                if (isSpotifyPlaying(context, requireLocal = true) && hasRecordAudioPermission(context)) {
                     return FrameSource.AudioReactive
                 }
             MusicPrefs.Mode.CUSTOM ->
@@ -291,9 +301,11 @@ object GuardToyEngine {
                     return FrameSource.Static(MusicPrefs.getFrames(context), MusicPrefs.getFrameIntervalMs(context))
                 }
         }
-        pendingPackage?.let { pkg ->
-            ImageToFrame.fromInstalledApp(context, pkg)?.let {
-                return FrameSource.Static(listOf(it), GuardPrefs.DEFAULT_FRAME_INTERVAL_MS)
+        freshPendingPackage?.let { pkg ->
+            if (IconNotifyPrefs.isEnabled(context, pkg)) {
+                ImageToFrame.fromInstalledApp(context, pkg)?.let {
+                    return FrameSource.Static(listOf(it), GuardPrefs.DEFAULT_FRAME_INTERVAL_MS)
+                }
             }
         }
         return FrameSource.Static(GuardPrefs.getFrames(context), GuardPrefs.getFrameIntervalMs(context))
@@ -307,14 +319,26 @@ object GuardToyEngine {
      * patterns — getActiveSessions() only requires that grant, not a
      * separate permission. Returns false (not an error) if Spotify isn't
      * running, isn't the active session, or access hasn't been granted.
+     *
+     * [requireLocal] additionally requires playback to be genuinely local
+     * (MediaController.PlaybackInfo.PLAYBACK_TYPE_LOCAL) — the visualizer
+     * specifically needs that, since Visualizer(0) only ever sees audio
+     * actually mixed on this device. Spotify Connect (casting playback to a
+     * separate speaker/device while this phone just remote-controls it)
+     * still reports STATE_PLAYING on its MediaSession even though no audio
+     * ever flows through this phone at all, which otherwise reads as
+     * "playing" while the visualizer has nothing whatsoever to capture —
+     * not needed for the CUSTOM-pattern tier, which doesn't capture audio.
      */
-    private fun isSpotifyPlaying(context: Context): Boolean {
+    private fun isSpotifyPlaying(context: Context, requireLocal: Boolean = false): Boolean {
         val msm = mediaSessionManager ?: return false
         return try {
             val listener = ComponentName(context, GlyphNotificationListenerService::class.java)
             msm.getActiveSessions(listener).any { controller ->
                 controller.packageName == SPOTIFY_PACKAGE &&
-                    controller.playbackState?.state == PlaybackState.STATE_PLAYING
+                    controller.playbackState?.state == PlaybackState.STATE_PLAYING &&
+                    (!requireLocal ||
+                        controller.playbackInfo?.playbackType == MediaController.PlaybackInfo.PLAYBACK_TYPE_LOCAL)
             }
         } catch (e: Exception) {
             false
@@ -338,7 +362,19 @@ object GuardToyEngine {
                 manager?.turnOff()
                 return
             }
-            when (val source = resolveFrameSource(context)) {
+            val pending = NotificationPatternState.pendingPackage
+            val ageMs = System.currentTimeMillis() - NotificationPatternState.pendingPostTimeMs
+            val freshPending = pending?.takeIf { ageMs < NOTIFICATION_FLASH_MS }
+            if (freshPending != null) {
+                // Re-resolve right when the flash window closes, rather than
+                // waiting for the next unrelated event (pickup, EVENT_AOD's
+                // own ~60s tick, another notification) to notice it expired.
+                notificationFlashJob = engineScope.launch {
+                    delay(NOTIFICATION_FLASH_MS - ageMs)
+                    startAnimation()
+                }
+            }
+            when (val source = resolveFrameSource(context, freshPending)) {
                 is FrameSource.Static -> playStatic(source.frames, source.intervalMs)
                 FrameSource.AudioReactive -> playAudioReactive(context)
             }
@@ -383,6 +419,8 @@ object GuardToyEngine {
     }
 
     private fun stopAllRendering() {
+        notificationFlashJob?.cancel()
+        notificationFlashJob = null
         animationJob?.cancel()
         animationJob = null
         audioEngine?.stop()

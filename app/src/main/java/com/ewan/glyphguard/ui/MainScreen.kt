@@ -19,6 +19,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -35,6 +38,7 @@ fun MainScreen(
     val brightness by viewModel.brightness.collectAsState()
     val previewFrame by viewModel.previewFrame.collectAsState()
     val isConnected by viewModel.isConnected.collectAsState()
+    var showLiveDraw by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -100,6 +104,14 @@ fun MainScreen(
 
         // ---- 4) Default pattern ----
         PatternPickerSection(viewModel = viewModel)
+
+        // ---- 5) Live draw ----
+        OutlinedButton(onClick = { showLiveDraw = !showLiveDraw }) {
+            Text(if (showLiveDraw) "Hide live draw" else "Live draw…")
+        }
+        if (showLiveDraw) {
+            LiveDrawSection(viewModel = viewModel)
+        }
 
         // ---- System toy manager shortcut ----
         Button(onClick = { openGlyphToyManager(context) }) {
